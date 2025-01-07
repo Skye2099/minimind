@@ -394,7 +394,7 @@ class Transformer(PreTrainedModel):
                  use_kv_cache=True):
         index = idx.shape[1]  # 获取当前序列长度
         while idx.shape[1] < max_new_tokens - 1:  # 当生成的 token 数量小于最大数量时
-            inference_res = self(idx, use_kv_cache=use_kv_cache)  # 进行前向传播
+            inference_res = self(idx, use_kv_cache=use_kv_cache)  # 进行前向传播,self()会调用nn.Module的__call__方法 -> 调用forward的方法，进入到target else的状态
             logits = inference_res.logits  # 获取 logits
             logits = logits[:, -1, :]  # 获取最后一个 token 的 logits
 
