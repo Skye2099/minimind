@@ -24,7 +24,7 @@ class RMSNorm(torch.nn.Module):
         output = self._norm(x.float()).type_as(x)  # 应用 RMSNorm
         return output * self.weight  # 乘以权重参数
 
-# 定义 precompute_pos_cis 函数，用于预计算位置编码的复数形式
+# 预计算位置编码的复数形式
 def precompute_pos_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))  # 计算频率
     t = torch.arange(end, device=freqs.device)  # 生成时间序列
@@ -32,7 +32,7 @@ def precompute_pos_cis(dim: int, end: int, theta: float = 10000.0):
     pos_cis = torch.polar(torch.ones_like(freqs), freqs)  # 计算复数形式的位置编码
     return pos_cis
 
-# 定义 apply_rotary_emb 函数，用于应用旋转位置编码
+# 旋转位置编码
 def apply_rotary_emb(xq, xk, pos_cis):
     def unite_shape(pos_cis, x):
         ndim = x.ndim
@@ -130,23 +130,30 @@ class Attention(nn.Module):
 
         output = self.wo(output)  # 应用输出矩阵
         output = self.resid_dropout(output)  # 应用残差 dropout
-        return output  # 返回输出
+        return output  # 与输入序列维度一致，是计算了序列的attention后的表示
 
-# 定义 FeedForward 类，实现前馈神经网络
+'''
+前馈网络用了SiLU激活函数Sigmoid Linear Unit
+SiLU(x)=x⋅σ(x),σ(x) 是 Sigmoid 函数，结合了线性函数和非线性 Sigmoid 函数的特点，在0附近，sigoid提供了非线性转换，x很大时候，sigmoid趋近1，则趋向线性函数或者0（核心依然是为了引入非线性）
+传统FFN: output = W2(ReLU(W1(x)))
+这里的实现： output = W2(SiLU(W1(x)) * W3(x)),这里W3是实际上充当了门控机制，类似LSTM的门控机制，通过元素级乘法(*)，它可以控制有多少信息能够通过网络
+这个实现实际上源自于PaLM模型的架构设计，后来被证明在大语言模型中非常有效。虽然结构更复杂，计算量更大，但在实际应用中，这种trade-off是值得的，因为它能带来更好的模型性能。
+所以，这不仅仅是一个简单的全连接层，而是一个经过精心设计的、能够更好地处理复杂信息流的网络结构。
+'''
 class FeedForward(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
         super().__init__()
         if hidden_dim is None:
-            hidden_dim = 4 * dim  # 设置隐藏层维度
-            hidden_dim = int(2 * hidden_dim / 3)  # 调整隐藏层维度
+            hidden_dim = 4 * dim  
+            hidden_dim = int(2 * hidden_dim / 3)  
             hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)  # 调整隐藏层维度
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)  # 初始化第一层线性变换
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)  # 初始化第二层线性变换
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)  # 初始化第三层线性变换
-        self.dropout = nn.Dropout(dropout)  # 初始化 dropout
+        self.dropout = nn.Dropout(dropout) 
 
     def forward(self, x):
-        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))  # 前向传播
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))  # 输出序列维度和输入一致，主要做了激活/非线性变换
 
 # 定义 MoEGate 类，实现专家混合（MoE）的门控机制
 class MoEGate(nn.Module):
@@ -305,22 +312,11 @@ class TransformerBlock(nn.Module):
             )  # 初始化前馈神经网络
 
     def forward(self, x, pos_cis, use_kv_cache=False):
-        h = x + self.attention(self.attention_norm(x), pos_cis, use_kv_cache)  # 计算自注意力
-        out = h + self.feed_forward(self.ffn_norm(h))  # 计算前馈神经网络
+        h = x + self.attention(self.attention_norm(x), pos_cis, use_kv_cache)  # attention + 残差
+        out = h + self.feed_forward(self.ffn_norm(h))  # FFN + 残差
         return out  # 返回输出
 
 # 定义 Transformer 类，实现整个 Transformer 模型
-class Transformer(PreTrainedModel):
-    config_class = LMConfig
-    last_loss: Optional[torch.Tensor]
-
-    def __init__(self, params: LMConfig = None):
-        super().__init__(params)
-        if not params:
-            params = LMConfig()
-        self.params = params
-        self.vocab_size = params.vocab_size
-        self.n_layers = params.n_layers
 class Transformer(PreTrainedModel):
     config_class = LMConfig
     last_loss: Optional[torch.Tensor]
